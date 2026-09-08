@@ -1,7 +1,6 @@
 //! This module manages the step of turning error types into printed error messages
 //!
 //! Relies on the `miette` crate for pretty layout
-use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,7 +55,7 @@ impl<'src> CliError<'src> {
 /// May rarely result in warnings incorrectly being unreported upon hash collision.
 #[derive(Default, derive_more::Debug)]
 #[debug("ReportLog([...])")]
-pub struct ReportLog(HashSet<u64>);
+pub struct ReportLog(Vec<u64>);
 
 /// How a warning/error should be reported
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -87,11 +86,12 @@ where
                 .lock()
                 .expect("report log lock is poisoned");
 
-            if report_log.0.contains(&hash) {
-                false
-            } else {
-                report_log.0.insert(hash);
-                true
+            match report_log.0.contains(&hash) {
+                true => false,
+                false => {
+                    report_log.0.push(hash);
+                    true
+                }
             }
         }
     }

@@ -223,23 +223,17 @@ pub fn compare_values(
 }
 
 pub fn compare_strings(left: &str, right: &str, insensitive: bool, natural: bool) -> Ordering {
-    fn compare_inner<T>(left: T, right: T, natural: bool) -> Ordering
-    where
-        T: AsRef<str> + Ord,
-    {
-        if natural {
-            alphanumeric_sort::compare_str(left, right)
-        } else {
-            left.cmp(&right)
-        }
-    }
-
     // only allocate a String if necessary for case folding
-    if insensitive {
-        compare_inner(left.to_folded_case(), right.to_folded_case(), natural)
-    } else {
-        compare_inner(left, right, natural)
+    if !insensitive {
+        if natural {
+            return alphanumeric_sort::compare_str(left, right);
+        }
+        return left.cmp(right);
     }
+    if natural {
+        return alphanumeric_sort::compare_str(left.to_lowercase(), right.to_lowercase());
+    }
+    return left.cmp_ignore_case(right);
 }
 
 pub fn compare_cell_path(

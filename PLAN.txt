@@ -1,0 +1,105 @@
+================================================================================
+                    NUSHELL PERFORMANCE OPTIMIZATION PLAN
+================================================================================
+
+  #   RATING   ITEM                        IMPACT
+────────────────────────────────────────────────────────────────────────────────
+
+  1    5/10    Sort-by key closures
+
+          File: crates/nu-command/src/sort_utils.rs:257
+
+          Every `sort-by` with a closure or cell path recomputes the
+          key function O(n log n) times. For 10K rows, the closure is
+          invoked ~3.6M times instead of just 10K. A Schwartzian
+          transform (precompute keys, sort indices, rearrange)
+          eliminates redundant evaluations.
+
+  2    5/10    $env rebuild on every access
+
+          File: crates/nu-engine/src/eval_ir.rs:1850
+
+          Every time `$env` is referenced, the engine allocates a new
+          Vec, clones all env keys as owned Strings, clones all
+          values, sorts by key, and builds a fresh Record. Scripts
+          that read `$env.PWD` or `$env.HOME` in loops pay this cost
+          on every iteration. Caching the record on the stack and
+          invalidating on env changes eliminates repeated rebuilds.
+
+  3    5/10    normalize_call_arguments drain-push
+
+          File: crates/nu-engine/src/eval_ir.rs:1562
+
+          On every single function call (builtins included), all
+          arguments are drained from the stack into a temporary Vec,
+          normalized (usually a no-op), then pushed back one by one.
+          This heap-allocates and copies for every call even when no
+          record spreads or null omissions exist. Short-circuiting
+          when no spreads are present removes the overhead entirely.
+
+  4    6/10    has_in_variable O(n^2) at compile time
+
+          File: crates/nu-command/src/compile/operator.rs:67
+
+          For every BinaryOp, the compiler walks the full AST subtree
+          on both LHS and RHS to check for `in` variable presence.
+          Nested expressions like `$a + $b + $c + $d` cause the inner
+          subtrees to be walked multiple times, giving O(n^2) total
+          work. Memoizing the flag on the AST node during parsing
+          makes each check O(1).
+
+  5    6/10    Stack::lookup_var O(n) linear scan
+
+          File: crates/nu-protocol/src/engine/stack.rs:249
+
+          Every `LoadVariable` IR instruction scans the variable list
+          linearly to find the matching VarId. In a script with 100
+          variables, each variable access scans up to 100 entries.
+          This is the hottest path in the engine since every pipeline
+          stage loads variables. Indexing variables by VarId in a Vec
+          turns each lookup into a direct O(1) index.
+
+  6    4/10    ls Mutex in parallel iterator
+
+          File: crates/nu-command/src/filesystem/ls.rs:469
+
+          `ls **/*` on large directories uses rayon for parallelism
+          but funnels all results through a single Mutex for
+          collection. This serializes the parallel work and causes
+          heavy lock contention. Using per-thread local Vecs and
+          merging after the parallel phase eliminates contention and
+          gives real parallel speedup.
+
+  7    4/10    Natural sort coerces Int/Float to String
+
+          File: crates/nu-command/src/sort_utils.rs:202
+
+          When natural sorting is enabled, every Int and Float value
+          is converted to a String before comparison, then the
+          string is scanned digit-by-digit. For a list of 10K
+          integers, this creates 10K String allocations and 10K
+          digit scans. Short-circuiting to a direct i64::cmp or
+          f64::cmp for native numeric types avoids all allocations.
+
+  8    4/10    math/utils RxC cell clones without pre-allocation
+
+          File: crates/nu-command/src/math/utils.rs:30
+
+          When operating on tables, the math utilities clone every
+          cell value into per-column Vecs. For a 10Kx10 table this
+          is 100K deep clones with no pre-allocation, causing
+          repeated Vec growth. Pre-allocating each column Vec with
+          with_capacity and borrowing column names from the first
+          row eliminates redundant allocs and string clones.
+
+  9    3/10    from delimited columns re-cloned per row
+
+          File: crates/nu-command/src/formats/from/delimited.rs:53
+
+          When parsing CSV/TSV, every column-name String is cloned
+          for every row to build each record. A 10K-row table with
+          20 columns creates 200K String clones just for headers.
+          Sharing column names via Arc means one allocation total
+          regardless of row count.
+
+================================================================================
